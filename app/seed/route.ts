@@ -7,6 +7,8 @@ const db = mysql.createPool({
   uri: process.env.DATABASE_URL,
 });
 
+// console.log(db);
+
 async function seedUsers() {
   await db.query(`
     CREATE TABLE IF NOT EXISTS users (
