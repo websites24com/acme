@@ -9,13 +9,15 @@ import {
 } from './definitions';
 import { formatCurrency } from './utils';
 
+// Connect to MySQL using connection pool
 const db = mysql.createPool({
   uri: process.env.DATABASE_URL,
 });
 
+// --- 1. Fetch all revenue rows
 export async function fetchRevenue() {
   try {
-    const [rows] = await db.query('SELECT * FROM revenue') as unknown as [Revenue[], any];
+    const [rows] = await db.query<Revenue[]>('SELECT * FROM revenue');
     return rows;
   } catch (error) {
     console.error('Database Error:', error);
@@ -23,15 +25,16 @@ export async function fetchRevenue() {
   }
 }
 
+// --- 2. Fetch 5 most recent invoices
 export async function fetchLatestInvoices() {
   try {
-    const [rows] = await db.query(`
+    const [rows] = await db.query<LatestInvoiceRaw[]>(`
       SELECT invoices.amount, customers.name, customers.image_url, customers.email, invoices.id
       FROM invoices
       JOIN customers ON invoices.customer_id = customers.id
       ORDER BY invoices.date DESC
       LIMIT 5
-    `) as unknown as [LatestInvoiceRaw[], any];
+    `);
 
     const latestInvoices = rows.map((invoice) => ({
       ...invoice,
@@ -45,20 +48,27 @@ export async function fetchLatestInvoices() {
   }
 }
 
+// --- 3. Fetch dashboard stats: # of invoices/customers, totals
 export async function fetchCardData() {
   try {
-    const [invoiceCountRows] = await db.query('SELECT COUNT(*) AS count FROM invoices') as unknown as [{ count: number }[], any];
-    const [customerCountRows] = await db.query('SELECT COUNT(*) AS count FROM customers') as unknown as [{ count: number }[], any];
-    const [invoiceStatusRows] = await db.query(`
+    const [invoiceCountRows] = await db.query<{ count: number }[]>(
+      'SELECT COUNT(*) AS count FROM invoices'
+    );
+
+    const [customerCountRows] = await db.query<{ count: number }[]>(
+      'SELECT COUNT(*) AS count FROM customers'
+    );
+
+    const [invoiceStatusRows] = await db.query<{ paid: number; pending: number }[]>(`
       SELECT
         SUM(CASE WHEN status = 'paid' THEN amount ELSE 0 END) AS paid,
         SUM(CASE WHEN status = 'pending' THEN amount ELSE 0 END) AS pending
       FROM invoices
-    `) as unknown as [{ paid: number; pending: number }[], any];
+    `);
 
     return {
-      numberOfCustomers: Number(customerCountRows[0]?.count ?? 0),
-      numberOfInvoices: Number(invoiceCountRows[0]?.count ?? 0),
+      numberOfCustomers: customerCountRows[0]?.count ?? 0,
+      numberOfInvoices: invoiceCountRows[0]?.count ?? 0,
       totalPaidInvoices: formatCurrency(invoiceStatusRows[0]?.paid ?? 0),
       totalPendingInvoices: formatCurrency(invoiceStatusRows[0]?.pending ?? 0),
     };
@@ -68,13 +78,16 @@ export async function fetchCardData() {
   }
 }
 
+// --- 4. Pagination logic
 const ITEMS_PER_PAGE = 6;
 
+// --- 5. Fetch invoices with search and pagination
 export async function fetchFilteredInvoices(query: string, currentPage: number) {
   const offset = (currentPage - 1) * ITEMS_PER_PAGE;
 
   try {
-    const [rows] = await db.query(`
+    const [rows] = await db.query<InvoicesTable[]>(
+      `
       SELECT
         invoices.id,
         invoices.amount,
@@ -93,7 +106,17 @@ export async function fetchFilteredInvoices(query: string, currentPage: number) 
         LOWER(invoices.status) LIKE LOWER(?)
       ORDER BY invoices.date DESC
       LIMIT ? OFFSET ?
-    `, [`%${query}%`, `%${query}%`, `%${query}%`, `%${query}%`, `%${query}%`, ITEMS_PER_PAGE, offset]) as unknown as [InvoicesTable[], any];
+      `,
+      [
+        `%${query}%`,
+        `%${query}%`,
+        `%${query}%`,
+        `%${query}%`,
+        `%${query}%`,
+        ITEMS_PER_PAGE,
+        offset,
+      ]
+    );
 
     return rows;
   } catch (error) {
@@ -102,9 +125,11 @@ export async function fetchFilteredInvoices(query: string, currentPage: number) 
   }
 }
 
+// --- 6. Count pages for search results
 export async function fetchInvoicesPages(query: string) {
   try {
-    const [rows] = await db.query(`
+    const [rows] = await db.query<{ count: number }[]>(
+      `
       SELECT COUNT(*) AS count
       FROM invoices
       JOIN customers ON invoices.customer_id = customers.id
@@ -114,7 +139,15 @@ export async function fetchInvoicesPages(query: string) {
         CAST(invoices.amount AS CHAR) LIKE ? OR
         CAST(invoices.date AS CHAR) LIKE ? OR
         LOWER(invoices.status) LIKE LOWER(?)
-    `, [`%${query}%`, `%${query}%`, `%${query}%`, `%${query}%`, `%${query}%`]) as unknown as [{ count: number }[], any];
+      `,
+      [
+        `%${query}%`,
+        `%${query}%`,
+        `%${query}%`,
+        `%${query}%`,
+        `%${query}%`,
+      ]
+    );
 
     const totalPages = Math.ceil((rows[0]?.count ?? 0) / ITEMS_PER_PAGE);
     return totalPages;
@@ -124,9 +157,11 @@ export async function fetchInvoicesPages(query: string) {
   }
 }
 
+// --- 7. Fetch invoice by ID (used for editing)
 export async function fetchInvoiceById(id: string) {
   try {
-    const [rows] = await db.query(`
+    const [rows] = await db.query<InvoiceForm[]>(
+      `
       SELECT
         invoices.id,
         invoices.customer_id,
@@ -134,13 +169,15 @@ export async function fetchInvoiceById(id: string) {
         invoices.status
       FROM invoices
       WHERE invoices.id = ?
-    `, [id]) as unknown as [InvoiceForm[], any];
+      `,
+      [id]
+    );
 
     const invoice = rows.map((invoice) => ({
       ...invoice,
       amount: invoice.amount / 100,
     }));
-
+    console.log('Invoice is empty', invoice); // Invoice is an empty array []
     return invoice[0];
   } catch (error) {
     console.error('Database Error:', error);
@@ -148,15 +185,16 @@ export async function fetchInvoiceById(id: string) {
   }
 }
 
+// --- 8. Fetch all customers (minimal data)
 export async function fetchCustomers() {
   try {
-    const [rows] = await db.query(`
-      SELECT
-        id,
-        name
+    const [rows] = await db.query<CustomerField[]>(
+      `
+      SELECT id, name
       FROM customers
       ORDER BY name ASC
-    `) as unknown as [CustomerField[], any];
+      `
+    );
 
     return rows;
   } catch (error) {
@@ -165,9 +203,11 @@ export async function fetchCustomers() {
   }
 }
 
+// --- 9. Fetch filtered customers (with stats)
 export async function fetchFilteredCustomers(query: string) {
   try {
-    const [rows] = await db.query(`
+    const [rows] = await db.query<CustomersTableType[]>(
+      `
       SELECT
         customers.id,
         customers.name,
@@ -183,7 +223,9 @@ export async function fetchFilteredCustomers(query: string) {
         LOWER(customers.email) LIKE LOWER(?)
       GROUP BY customers.id, customers.name, customers.email, customers.image_url
       ORDER BY customers.name ASC
-    `, [`%${query}%`, `%${query}%`]) as unknown as [CustomersTableType[], any];
+      `,
+      [`%${query}%`, `%${query}%`]
+    );
 
     const customers = rows.map((customer) => ({
       ...customer,
